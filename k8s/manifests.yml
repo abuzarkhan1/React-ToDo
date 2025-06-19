@@ -1,3 +1,6 @@
+# Complete Kubernetes Manifest for HRMS Application
+# Apply with: kubectl apply -f hrms-complete.yaml
+
 # namespace.yaml
 apiVersion: v1
 kind: Namespace
@@ -85,11 +88,38 @@ spec:
           mountPath: /var/lib/mysql
         resources:
           requests:
-            memory: "256Mi"
-            cpu: "250m"
-          limits:
             memory: "512Mi"
             cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        livenessProbe:
+          exec:
+            command:
+            - mysqladmin
+            - ping
+            - -h
+            - localhost
+            - -u
+            - root
+            - -padmin
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 5
+        readinessProbe:
+          exec:
+            command:
+            - mysql
+            - -h
+            - localhost
+            - -u
+            - root
+            - -padmin
+            - -e
+            - "SELECT 1"
+          initialDelaySeconds: 30
+          periodSeconds: 5
+          timeoutSeconds: 3
       volumes:
       - name: mysql-storage
         persistentVolumeClaim:
@@ -109,7 +139,7 @@ spec:
     targetPort: 3306
   type: ClusterIP
 ---
-# backend-configmap.yaml (will be updated after getting LoadBalancer URLs)
+# backend-configmap.yaml
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -121,11 +151,12 @@ data:
   DBUSER: "hrms"
   DBNAME: "Project_fyp"
   DBPORT: "3306"
-  FRONTEND_URL: "PLACEHOLDER_FRONTEND_URL"  # Will be replaced with LoadBalancer URL
-  CORS_ORIGIN: "PLACEHOLDER_FRONTEND_URL"   # Will be replaced with LoadBalancer URL
+  FRONTEND_URL: "PLACEHOLDER_FRONTEND_URL"
+  CORS_ORIGIN: "PLACEHOLDER_FRONTEND_URL"
   SMTP_HOST: "smtp.gmail.com"
   SMTP_PORT: "587"
   SMTP_USER: "abuzarkhan1242@gmail.com"
+  NODE_ENV: "production"
 ---
 # backend-secret.yaml
 apiVersion: v1
@@ -159,6 +190,17 @@ spec:
       labels:
         app: backend
     spec:
+      initContainers:
+      - name: wait-for-mysql
+        image: busybox:1.35
+        command: ['sh', '-c']
+        args:
+          - |
+            until nc -z mysql 3306; do
+              echo "Waiting for MySQL to be ready..."
+              sleep 2
+            done
+            echo "MySQL is ready!"
       containers:
       - name: backend
         image: abuzarkhan1/fyp-backend:latest
@@ -169,13 +211,32 @@ spec:
             name: backend-config
         - secretRef:
             name: backend-secret
+        env:
+        - name: NODE_ENV
+          value: "production"
         resources:
           requests:
-            memory: "128Mi"
-            cpu: "100m"
-          limits:
             memory: "256Mi"
             cpu: "200m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 5000
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 5000
+          initialDelaySeconds: 30
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
 ---
 # backend-service.yaml (ClusterIP)
 apiVersion: v1
@@ -209,6 +270,17 @@ spec:
     protocol: TCP
   type: LoadBalancer
 ---
+# flask-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: flask-config
+  namespace: hrms
+data:
+  PORT: "3000"
+  FLASK_ENV: "production"
+  PYTHONUNBUFFERED: "1"
+---
 # flask-deployment.yaml
 apiVersion: apps/v1
 kind: Deployment
@@ -230,13 +302,37 @@ spec:
         image: abuzarkhan1/fyp-model:latest
         ports:
         - containerPort: 3000
+        envFrom:
+        - configMapRef:
+            name: flask-config
+        env:
+        - name: FLASK_RUN_HOST
+          value: "0.0.0.0"
+        - name: FLASK_RUN_PORT
+          value: "3000"
         resources:
           requests:
-            memory: "128Mi"
-            cpu: "100m"
+            memory: "512Mi"
+            cpu: "300m"
           limits:
-            memory: "256Mi"
-            cpu: "200m"
+            memory: "2Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 3000
+          initialDelaySeconds: 120
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 3000
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 5
 ---
 # flask-service.yaml (ClusterIP)
 apiVersion: v1
@@ -270,15 +366,15 @@ spec:
     protocol: TCP
   type: LoadBalancer
 ---
-# client-configmap.yaml (will be updated after getting LoadBalancer URLs)
+# client-configmap.yaml
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: client-config
   namespace: hrms
 data:
-  VITE_APP_BASE_URL: "PLACEHOLDER_BACKEND_URL"   # Will be replaced with LoadBalancer URL
-  VITE_API_URL: "PLACEHOLDER_FLASK_URL"          # Will be replaced with LoadBalancer URL
+  VITE_APP_BASE_URL: "PLACEHOLDER_BACKEND_URL"
+  VITE_API_URL: "PLACEHOLDER_FLASK_URL"
 ---
 # client-deployment.yaml
 apiVersion: apps/v1
