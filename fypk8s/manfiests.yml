@@ -1,0 +1,345 @@
+# namespace.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hrms
+---
+# mysql-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mysql-config
+  namespace: hrms
+data:
+  MYSQL_DATABASE: "Project_fyp"
+  MYSQL_USER: "hrms"
+---
+# mysql-secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mysql-secret
+  namespace: hrms
+type: Opaque
+data:
+  MYSQL_ROOT_PASSWORD: YWRtaW4=  # base64 encoded "admin"
+  MYSQL_PASSWORD: YWRtaW4=      # base64 encoded "admin"
+---
+# mysql-pvc.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mysql-pvc
+  namespace: hrms
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+# mysql-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mysql
+  namespace: hrms
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mysql
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      containers:
+      - name: mysql
+        image: mysql:8.0
+        ports:
+        - containerPort: 3306
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mysql-secret
+              key: MYSQL_ROOT_PASSWORD
+        - name: MYSQL_DATABASE
+          valueFrom:
+            configMapKeyRef:
+              name: mysql-config
+              key: MYSQL_DATABASE
+        - name: MYSQL_USER
+          valueFrom:
+            configMapKeyRef:
+              name: mysql-config
+              key: MYSQL_USER
+        - name: MYSQL_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mysql-secret
+              key: MYSQL_PASSWORD
+        volumeMounts:
+        - name: mysql-storage
+          mountPath: /var/lib/mysql
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+      volumes:
+      - name: mysql-storage
+        persistentVolumeClaim:
+          claimName: mysql-pvc
+---
+# mysql-service.yaml (ClusterIP - internal only)
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+  namespace: hrms
+spec:
+  selector:
+    app: mysql
+  ports:
+  - port: 3306
+    targetPort: 3306
+  type: ClusterIP
+---
+# backend-configmap.yaml (will be updated after getting LoadBalancer URLs)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-config
+  namespace: hrms
+data:
+  PORT: "5000"
+  DBHOST: "mysql"
+  DBUSER: "hrms"
+  DBNAME: "Project_fyp"
+  DBPORT: "3306"
+  FRONTEND_URL: "PLACEHOLDER_FRONTEND_URL"  # Will be replaced with LoadBalancer URL
+  CORS_ORIGIN: "PLACEHOLDER_FRONTEND_URL"   # Will be replaced with LoadBalancer URL
+  SMTP_HOST: "smtp.gmail.com"
+  SMTP_PORT: "587"
+  SMTP_USER: "abuzarkhan1242@gmail.com"
+---
+# backend-secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: backend-secret
+  namespace: hrms
+type: Opaque
+data:
+  DBPASSWORD: YWRtaW4=  # base64 encoded "admin"
+  EMPLOYEE_ACCESS_TOKEN_SECRET: SktETFNKQUtGMzI0MzIkJCMjQEAhISEhRVJFRGRFZGQ=
+  ADMIN_ACCESS_TOKEN_SECRET: MTIzIyQkKiVeQkFHQUdnYWJhZyomXik=
+  MANAGER_ACCESS_TOKEN_SECRET: Z2hneWV5ZSMkJCQlXkJBR0FHZ2FiYWcqJl4p
+  REFRESH_TOKEN_SECRET: SkRLTFNKQUtGMzIyMzQyMyNAJCQkQCMkQCMzNDIzNEE=
+  ACCESS_TOKEN_SECRET: SktETFNKQUtGMzI0MzIkJCQjQEAhISEhRVJFRGRFZGQ=
+  SMTP_PASS: cXFieSByc2VjIGhnd2ggcnhmcw==
+---
+# backend-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: hrms
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      containers:
+      - name: backend
+        image: abuzarkhan1/fyp-backend:latest
+        ports:
+        - containerPort: 5000
+        envFrom:
+        - configMapRef:
+            name: backend-config
+        - secretRef:
+            name: backend-secret
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+---
+# backend-service.yaml (ClusterIP)
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: hrms
+spec:
+  selector:
+    app: backend
+  ports:
+  - port: 5000
+    targetPort: 5000
+  type: ClusterIP
+---
+# backend-loadbalancer.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-lb
+  namespace: hrms
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+spec:
+  selector:
+    app: backend
+  ports:
+  - port: 80
+    targetPort: 5000
+    protocol: TCP
+  type: LoadBalancer
+---
+# flask-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flask-screening
+  namespace: hrms
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flask-screening
+  template:
+    metadata:
+      labels:
+        app: flask-screening
+    spec:
+      containers:
+      - name: flask-screening
+        image: abuzarkhan1/fyp-model:latest
+        ports:
+        - containerPort: 3000
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+---
+# flask-service.yaml (ClusterIP)
+apiVersion: v1
+kind: Service
+metadata:
+  name: flask-screening
+  namespace: hrms
+spec:
+  selector:
+    app: flask-screening
+  ports:
+  - port: 3000
+    targetPort: 3000
+  type: ClusterIP
+---
+# flask-loadbalancer.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: flask-lb
+  namespace: hrms
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+spec:
+  selector:
+    app: flask-screening
+  ports:
+  - port: 80
+    targetPort: 3000
+    protocol: TCP
+  type: LoadBalancer
+---
+# client-configmap.yaml (will be updated after getting LoadBalancer URLs)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: client-config
+  namespace: hrms
+data:
+  VITE_APP_BASE_URL: "PLACEHOLDER_BACKEND_URL"   # Will be replaced with LoadBalancer URL
+  VITE_API_URL: "PLACEHOLDER_FLASK_URL"          # Will be replaced with LoadBalancer URL
+---
+# client-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: client
+  namespace: hrms
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: client
+  template:
+    metadata:
+      labels:
+        app: client
+    spec:
+      containers:
+      - name: client
+        image: abuzarkhan1/fyp-client:latest
+        ports:
+        - containerPort: 5173
+        envFrom:
+        - configMapRef:
+            name: client-config
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+---
+# client-service.yaml (ClusterIP)
+apiVersion: v1
+kind: Service
+metadata:
+  name: client
+  namespace: hrms
+spec:
+  selector:
+    app: client
+  ports:
+  - port: 5173
+    targetPort: 5173
+  type: ClusterIP
+---
+# client-loadbalancer.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: client-lb
+  namespace: hrms
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+spec:
+  selector:
+    app: client
+  ports:
+  - port: 80
+    targetPort: 5173
+    protocol: TCP
+  type: LoadBalancer
