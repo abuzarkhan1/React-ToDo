@@ -1,5 +1,5 @@
-# Complete Kubernetes Manifest for HRMS Application
-# Apply with: kubectl apply -f hrms-complete.yaml
+# Complete Fixed Kubernetes Manifest for HRMS Application
+# Apply with: kubectl apply -f hrms-fixed.yaml
 
 # namespace.yaml
 apiVersion: v1
@@ -28,7 +28,7 @@ data:
   MYSQL_ROOT_PASSWORD: YWRtaW4=  # base64 encoded "admin"
   MYSQL_PASSWORD: YWRtaW4=      # base64 encoded "admin"
 ---
-# mysql-pvc.yaml
+# mysql-pvc.yaml - Fixed with storage class
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -37,11 +37,12 @@ metadata:
 spec:
   accessModes:
     - ReadWriteOnce
+  storageClassName: gp2  # Added EKS default storage class
   resources:
     requests:
       storage: 10Gi
 ---
-# mysql-deployment.yaml
+# mysql-deployment.yaml - Fixed with better health checks
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -83,6 +84,9 @@ spec:
             secretKeyRef:
               name: mysql-secret
               key: MYSQL_PASSWORD
+        # Added for better MySQL initialization
+        - name: MYSQL_ROOT_HOST
+          value: "%"
         volumeMounts:
         - name: mysql-storage
           mountPath: /var/lib/mysql
@@ -93,6 +97,7 @@ spec:
           limits:
             memory: "1Gi"
             cpu: "1000m"
+        # Fixed health checks - remove password from commands for security
         livenessProbe:
           exec:
             command:
@@ -102,10 +107,11 @@ spec:
             - localhost
             - -u
             - root
-            - -padmin
-          initialDelaySeconds: 60
+            - --password=$MYSQL_ROOT_PASSWORD
+          initialDelaySeconds: 90  # Increased delay
           periodSeconds: 10
           timeoutSeconds: 5
+          failureThreshold: 5
         readinessProbe:
           exec:
             command:
@@ -114,12 +120,13 @@ spec:
             - localhost
             - -u
             - root
-            - -padmin
+            - --password=$MYSQL_ROOT_PASSWORD
             - -e
             - "SELECT 1"
-          initialDelaySeconds: 30
+          initialDelaySeconds: 60  # Increased delay
           periodSeconds: 5
           timeoutSeconds: 3
+          failureThreshold: 5
       volumes:
       - name: mysql-storage
         persistentVolumeClaim:
@@ -174,7 +181,7 @@ data:
   ACCESS_TOKEN_SECRET: SktETFNKQUtGMzI0MzIkJCQjQEAhISEhRVJFRGRFZGQ=
   SMTP_PASS: cXFieSByc2VjIGhnd2ggcnhmcw==
 ---
-# backend-deployment.yaml
+# backend-deployment.yaml - Fixed wait-for-mysql logic
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -196,11 +203,14 @@ spec:
         command: ['sh', '-c']
         args:
           - |
+            echo "Waiting for MySQL to be ready..."
             until nc -z mysql 3306; do
-              echo "Waiting for MySQL to be ready..."
-              sleep 2
+              echo "MySQL not ready, waiting..."
+              sleep 5
             done
-            echo "MySQL is ready!"
+            echo "MySQL is ready! Waiting additional 30 seconds for full initialization..."
+            sleep 30
+            echo "Ready to start backend!"
       containers:
       - name: backend
         image: abuzarkhan1/fyp-backend:latest
@@ -225,18 +235,18 @@ spec:
           httpGet:
             path: /
             port: 5000
-          initialDelaySeconds: 60
+          initialDelaySeconds: 120  # Increased delay
           periodSeconds: 10
           timeoutSeconds: 5
-          failureThreshold: 3
+          failureThreshold: 5
         readinessProbe:
           httpGet:
             path: /
             port: 5000
-          initialDelaySeconds: 30
+          initialDelaySeconds: 60   # Increased delay
           periodSeconds: 5
           timeoutSeconds: 3
-          failureThreshold: 3
+          failureThreshold: 5
 ---
 # backend-service.yaml (ClusterIP)
 apiVersion: v1
@@ -375,8 +385,10 @@ metadata:
 data:
   VITE_APP_BASE_URL: "PLACEHOLDER_BACKEND_URL"
   VITE_API_URL: "PLACEHOLDER_FLASK_URL"
+  # Added Node.js environment for production
+  NODE_ENV: "production"
 ---
-# client-deployment.yaml
+# client-deployment.yaml - Fixed with proper startup command
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -400,13 +412,33 @@ spec:
         envFrom:
         - configMapRef:
             name: client-config
+        # Added proper startup command
+        command: ["npm"]
+        args: ["run", "dev", "--", "--host", "0.0.0.0", "--port", "5173"]
         resources:
           requests:
-            memory: "128Mi"
+            memory: "256Mi"  # Increased memory
             cpu: "100m"
           limits:
-            memory: "256Mi"
-            cpu: "200m"
+            memory: "512Mi"  # Increased memory
+            cpu: "300m"
+        # Added health checks for frontend
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 5173
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 5173
+          initialDelaySeconds: 30
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
 ---
 # client-service.yaml (ClusterIP)
 apiVersion: v1
